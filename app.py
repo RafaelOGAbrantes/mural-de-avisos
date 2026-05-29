@@ -3,6 +3,8 @@ import pandas as pd
 import sqlite3
 import os
 import bcrypt
+import json
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -690,53 +692,7 @@ def render_mural_grid(week_id):
         st.divider()
 
 
-def render_week_navigation(current_week_id):
-    """Renderiza navegação entre semanas com botões e dropdown"""
-    st.subheader("📅 Selecionar Semana")
-    
-    weeks = get_all_weeks()
-    if not weeks:
-        return current_week_id
-
-    # Mapear semanas para exibir no selectbox
-    week_options = {f"{rotulo} ({start_date} a {end_date})": w_id for w_id, start_date, end_date, rotulo in weeks}
-    
-    current_key = None
-    for key, w_id in week_options.items():
-        if w_id == current_week_id:
-            current_key = key
-            break
-            
-    option_list = list(week_options.keys())
-    current_index = option_list.index(current_key) if current_key in option_list else 0
-    
-    col1, col2, col3 = st.columns([1.2, 3, 1.2])
-    
-    # Encontrar posições de navegação
-    sorted_ids = [w[0] for w in reversed(weeks)]  # Ordenado por data_inicio ASC
-    
-    try:
-        current_pos = sorted_ids.index(current_week_id)
-    except ValueError:
-        current_pos = -1
-        
-    with col1:
-        has_prev = current_pos > 0
-        if st.button("⬅️ Anterior", key="prev_week", disabled=not has_prev, use_container_width=True):
-            new_week_id = sorted_ids[current_pos - 1]
-            return new_week_id
-            
-    with col2:
-        selected_label = st.selectbox("Selecione a Semana:", option_list, index=current_index, label_visibility="collapsed")
-        new_week_id = week_options[selected_label]
-        
-    with col3:
-        has_next = current_pos != -1 and current_pos < len(sorted_ids) - 1
-        if st.button("Próxima ➡️", key="next_week", disabled=not has_next, use_container_width=True):
-            new_week_id = sorted_ids[current_pos + 1]
-            return new_week_id
-            
-    return new_week_id
+# render_week_navigation removida: o sistema sempre exibe a semana vigente automaticamente.
 
 # ============== PAINEL ADMINISTRATIVO ==============
 def render_admin_setores():
@@ -877,65 +833,132 @@ def render_admin_usuarios():
                             st.success("Usuário excluído!")
                             st.rerun()
 
-def render_admin_semanas():
-    st.header("📅 Gerenciar Semanas")
-    
-    # 1. Formulário para adicionar semana
-    with st.expander("➕ Adicionar Nova Semana", expanded=False):
-        new_start = st.date_input("Data de Início (Segunda-feira):", value=datetime.now().date() - timedelta(days=datetime.now().weekday()))
-        new_end = st.date_input("Data de Fim (Domingo):", value=new_start + timedelta(days=6))
-        new_rotulo = st.text_input("Rótulo da Semana (ex: Semana 21/05):", value=f"Semana {new_start.strftime('%d/%m')}")
-        
-        if st.button("Adicionar Semana", type="primary"):
-            add_semana(new_start, new_end, new_rotulo)
-            st.success("Semana adicionada com sucesso!")
-            st.rerun()
+def export_avisos_semana(week_id):
+    """Exporta todos os avisos da semana como JSON para backup"""
+    conn = init_database(DB_PATH)
+    cursor = conn.cursor()
+    # Info da semana
+    cursor.execute("SELECT data_inicio, data_fim, numero_semana FROM semanas WHERE id = ?", (week_id,))
+    week_row = cursor.fetchone()
+    # Avisos
+    cursor.execute("""
+        SELECT a.titulo, a.descricao, a.dia_da_semana, a.horario, s.nome as setor_nome
+        FROM avisos a
+        LEFT JOIN setores s ON a.setor_id = s.id
+        WHERE a.semana_id = ?
+        ORDER BY s.nome, a.dia_da_semana, a.horario
+    """, (week_id,))
+    avisos = cursor.fetchall()
+    conn.close()
 
-    # 2. Listagem de semanas
-    weeks = get_all_weeks()
-    if not weeks:
-        st.info("Nenhuma semana cadastrada.")
-        return
-        
-    st.write("### Semanas Cadastradas")
-    for w_id, start_date, end_date, rotulo in weeks:
-        with st.container(border=True):
-            col_info, col_edit, col_del = st.columns([4, 1, 1])
-            with col_info:
-                st.markdown(f"**{rotulo}**")
-                try:
-                    start_fmt = datetime.strptime(start_date, "%Y-%m-%d").strftime("%d/%m/%Y")
-                    end_fmt = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d/%m/%Y")
-                except:
-                    start_fmt = start_date
-                    end_fmt = end_date
-                st.caption(f"Período: {start_fmt} até {end_fmt}")
-            
-            with col_edit:
-                with st.popover("📝 Editar", use_container_width=True):
-                    try:
-                        parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
-                    except:
-                        parsed_start = datetime.now().date()
-                        parsed_end = datetime.now().date()
-                        
-                    edit_start = st.date_input("Início:", value=parsed_start, key=f"edit_w_start_{w_id}")
-                    edit_end = st.date_input("Fim:", value=parsed_end, key=f"edit_w_end_{w_id}")
-                    edit_rotulo = st.text_input("Rótulo:", value=rotulo, key=f"edit_w_rotulo_{w_id}")
-                    
-                    if st.button("Salvar", key=f"save_w_btn_{w_id}", use_container_width=True):
-                        edit_semana(w_id, edit_start, edit_end, edit_rotulo)
-                        st.success("Atualizado!")
-                        st.rerun()
-            
-            with col_del:
-                with st.popover("🗑️ Excluir", use_container_width=True):
-                    st.warning("Excluir esta semana apagará todos os avisos associados!")
-                    if st.button("Confirmar", key=f"del_w_btn_{w_id}", type="primary", use_container_width=True):
-                        delete_semana(w_id)
-                        st.success("Semana excluída!")
-                        st.rerun()
+    data = {
+        "semana": {
+            "data_inicio": week_row[0] if week_row else None,
+            "data_fim": week_row[1] if week_row else None,
+            "rotulo": week_row[2] if week_row else None,
+        },
+        "avisos": [
+            {
+                "titulo": av[0],
+                "descricao": av[1],
+                "dia_da_semana": av[2],
+                "horario": av[3],
+                "setor_nome": av[4],
+            }
+            for av in avisos
+        ]
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def import_avisos_semana(json_str, week_id):
+    """Importa avisos de um JSON de backup para a semana vigente"""
+    try:
+        data = json.loads(json_str)
+    except Exception as e:
+        return False, f"Arquivo inválido: {e}"
+
+    avisos = data.get("avisos", [])
+    if not avisos:
+        return False, "Nenhum aviso encontrado no arquivo."
+
+    conn = init_database(DB_PATH)
+    cursor = conn.cursor()
+
+    # Mapear nome de setor -> id
+    cursor.execute("SELECT id, nome FROM setores")
+    setor_map = {nome: sid for sid, nome in cursor.fetchall()}
+
+    imported = 0
+    errors = []
+    for av in avisos:
+        setor_nome = av.get("setor_nome")
+        setor_id = setor_map.get(setor_nome)
+        if not setor_id:
+            errors.append(f"Setor '{setor_nome}' não encontrado, aviso ignorado.")
+            continue
+        try:
+            cursor.execute("""
+                INSERT INTO avisos (setor_id, semana_id, titulo, descricao, dia_da_semana, data_aviso, horario, criado_por)
+                VALUES (?, ?, ?, ?, ?, CURRENT_DATE, ?, NULL)
+            """, (setor_id, week_id, av.get("titulo", ""), av.get("descricao", ""),
+                  av.get("dia_da_semana", ""), av.get("horario", "")))
+            imported += 1
+        except Exception as e:
+            errors.append(str(e))
+
+    conn.commit()
+    conn.close()
+
+    msg = f"{imported} aviso(s) importado(s) com sucesso."
+    if errors:
+        msg += " Avisos ignorados: " + "; ".join(errors)
+    return True, msg
+
+
+def render_admin_backup():
+    """Painel de backup e importação de avisos da semana vigente"""
+    st.header("💾 Backup e Importação de Avisos")
+
+    week_id = get_current_week_id()
+    week_info = get_week_info(week_id)
+    if week_info:
+        try:
+            start_fmt = datetime.strptime(week_info[0], "%Y-%m-%d").strftime("%d/%m/%Y")
+            end_fmt = datetime.strptime(week_info[1], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            start_fmt, end_fmt = week_info[0], week_info[1]
+        st.info(f"📅 Semana vigente: **{week_info[2]}** ({start_fmt} – {end_fmt})")
+
+    st.subheader("📤 Exportar (Backup)")
+    st.write("Baixe um arquivo JSON com todos os avisos da semana atual.")
+    if st.button("Gerar Backup da Semana Vigente", type="primary"):
+        json_data = export_avisos_semana(week_id)
+        filename = f"backup_avisos_{datetime.now().strftime('%Y%m%d')}.json"
+        st.download_button(
+            label="⬇️ Baixar Backup JSON",
+            data=json_data.encode("utf-8"),
+            file_name=filename,
+            mime="application/json",
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    st.subheader("📥 Importar Avisos")
+    st.write("Carregue um arquivo JSON de backup para importar os avisos para a semana vigente.")
+    st.warning("⚠️ Os avisos importados serão **adicionados** aos existentes. Avisos duplicados não serão verificados automaticamente.")
+
+    uploaded_file = st.file_uploader("Selecione o arquivo de backup (.json):", type=["json"], key="backup_upload")
+    if uploaded_file is not None:
+        if st.button("Importar Avisos para Semana Vigente", type="primary", key="import_btn"):
+            json_str = uploaded_file.read().decode("utf-8")
+            ok, msg = import_avisos_semana(json_str, week_id)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
 
 # ============== INTERFACE PRINCIPAL ==============
 def main():
@@ -944,9 +967,8 @@ def main():
     # Carregar estilos css
     load_css()
     
-    # Inicializações seguras de session state
-    if 'current_week_id' not in st.session_state:
-        st.session_state.current_week_id = get_current_week_id()
+    # Sempre usa a semana vigente
+    current_week_id = get_current_week_id()
     
     # Renderizar login
     render_login_sidebar()
@@ -959,31 +981,33 @@ def main():
         st.sidebar.subheader("⚙️ Administração")
         menu = st.sidebar.radio(
             "Navegar para:",
-            ["📋 Mural de Avisos", "🏢 Gerenciar Setores", "👤 Gerenciar Usuários", "📅 Gerenciar Semanas"]
+            ["📋 Mural de Avisos", "🏢 Gerenciar Setores", "👤 Gerenciar Usuários", "💾 Backup e Importação"]
         )
     else:
         menu = "📋 Mural de Avisos"
         
     # Renderizar conteúdo selecionado
     if menu == "📋 Mural de Avisos":
-        # Navegação de semanas
-        current_week = st.session_state.current_week_id
-        new_week = render_week_navigation(current_week)
-        
-        if new_week != current_week:
-            st.session_state.current_week_id = new_week
-            st.rerun()
-            
+        # Exibe a semana vigente
+        week_info = get_week_info(current_week_id)
+        if week_info:
+            try:
+                start_fmt = datetime.strptime(week_info[0], "%Y-%m-%d").strftime("%d/%m/%Y")
+                end_fmt = datetime.strptime(week_info[1], "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                start_fmt, end_fmt = week_info[0], week_info[1]
+            st.caption(f"📅 Semana vigente: **{week_info[2]}** — {start_fmt} a {end_fmt}")
+
         # Mural principal em formato de planilha/grade
         st.write("")
-        render_mural_grid(st.session_state.current_week_id)
+        render_mural_grid(current_week_id)
                 
     elif menu == "🏢 Gerenciar Setores":
         render_admin_setores()
     elif menu == "👤 Gerenciar Usuários":
         render_admin_usuarios()
-    elif menu == "📅 Gerenciar Semanas":
-        render_admin_semanas()
+    elif menu == "💾 Backup e Importação":
+        render_admin_backup()
 
 if __name__ == "__main__":
     main()
